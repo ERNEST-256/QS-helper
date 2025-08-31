@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+transformers
+torch
+yfinance
+numpy
+requests
+cachetools
+pydantic

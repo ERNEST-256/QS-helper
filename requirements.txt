@@ -1,8 +1,9 @@
 fastapi
 uvicorn
-transformers>=4.30.0
+transformers
 torch
-requests
 yfinance
 numpy
+requests
 cachetools
+pydantic

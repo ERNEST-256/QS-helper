@@ -11,10 +11,11 @@ from cachetools import TTLCache, cached
 # -----------------------------
 # CONFIG
 # -----------------------------
-NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()  # optional
-MAX_HEADLINES = 3
+NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
+MAX_HEADLINES = 10  # fetch more for robustness
+
 MODEL_A = "yiyanghkust/finbert-tone"
-MODEL_B = "mrm8488/distilroberta-finetuned-financial-news-sentiment"
+MODEL_B = "ProsusAI/finbert"
 
 # -----------------------------
 # Load models
@@ -31,7 +32,6 @@ LABEL_MAP = {
 # -----------------------------
 # Caching
 # -----------------------------
-# Cache up to 100 stocks, expires after 10 minutes
 stock_cache = TTLCache(maxsize=100, ttl=600)
 
 # -----------------------------
@@ -51,10 +51,10 @@ def fetch_news_newsapi(query: str, limit: int = MAX_HEADLINES) -> List[str]:
     try:
         r = requests.get(url, params=params, timeout=6)
         r.raise_for_status()
-        data = r.json()
-        articles = data.get("articles", [])[:limit]
+        articles = r.json().get("articles", [])[:limit]
         return [a.get("title", "") for a in articles if a.get("title")]
-    except:
+    except Exception as e:
+        print(f"[NewsAPI error] {e}")
         return []
 
 def fetch_news_yfinance(ticker: str, limit: int = MAX_HEADLINES) -> List[str]:
@@ -62,14 +62,15 @@ def fetch_news_yfinance(ticker: str, limit: int = MAX_HEADLINES) -> List[str]:
         t = yf.Ticker(ticker)
         news_items = getattr(t, "news", None) or []
         return [n.get("title") for n in news_items if n.get("title")][:limit]
-    except:
+    except Exception as e:
+        print(f"[Yahoo Finance error] {e}")
         return []
 
 def fetch_headlines(stock: str, limit: int = MAX_HEADLINES) -> List[str]:
     headlines = fetch_news_newsapi(stock, limit)
-    if headlines:
-        return headlines
-    return fetch_news_yfinance(stock, limit)
+    if not headlines:
+        headlines = fetch_news_yfinance(stock, limit)
+    return headlines
 
 # -----------------------------
 # Ensemble utilities
@@ -98,14 +99,23 @@ def aggregate_headlines_vectors(vectors: List[np.ndarray]) -> np.ndarray:
     if not vectors:
         return np.array([0.0,1.0,0.0])
     mean_vec = np.mean(vectors, axis=0)
-    mean_vec = np.clip(mean_vec, 0.0, None)
     total = mean_vec.sum()
     return mean_vec / total if total > 0 else np.array([0.0,1.0,0.0])
 
 def vector_to_score(vec: np.ndarray) -> float:
     neg, neu, pos = vec.tolist()
-    score = pos + 0.5 * neu
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, pos + 0.5 * neu))
+
+# -----------------------------
+# Decay utilities
+# -----------------------------
+def get_decay_factor(num_headlines: int, max_headlines: int = MAX_HEADLINES,
+                     min_decay: float = 0.6, max_decay: float = 0.95) -> float:
+    """
+    Dynamic decay: more headlines → higher decay → score can approach extremes.
+    """
+    ratio = min(num_headlines / max_headlines, 1.0)
+    return min_decay + ratio * (max_decay - min_decay)
 
 # -----------------------------
 # FastAPI app
@@ -116,15 +126,28 @@ class StocksRequest(BaseModel):
     stocks: List[str]
 
 @cached(stock_cache)
-def analyze_single_stock(stock: str) -> float:
+def analyze_single_stock(stock: str) -> float | str:
     headlines = fetch_headlines(stock)
-    vectors = [headline_score_ensemble(h) for h in headlines if h and len(h.strip())>10]
+    headlines = [h for h in headlines if h and len(h.strip()) > 10]
+
+    if not headlines or len(headlines) < 2:
+        return "NO_DATA"
+
+    vectors = [headline_score_ensemble(h) for h in headlines]
     agg = aggregate_headlines_vectors(vectors)
-    score = round(vector_to_score(agg), 2)
-    return score if score else 0.5
+    raw_score = vector_to_score(agg)
+
+    # Apply dynamic decay
+    decay = get_decay_factor(len(headlines))
+    adjusted_score = 0.5 + decay * (raw_score - 0.5)
+    return round(adjusted_score, 2)
+
+@app.get("/")
+def root():
+    return {"message": "Fin-senti API is running! Use POST /analyze"}
 
 @app.post("/analyze")
-def analyze_stocks(req: StocksRequest):
+def analyze(req: StocksRequest):
     results = {}
     for stock in req.stocks:
         results[stock] = analyze_single_stock(stock)
@@ -132,4 +155,5 @@ def analyze_stocks(req: StocksRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    port = int(os.environ.get("PORT", 7860))
+    uvicorn.run(app, host="0.0.0.0", port=port)

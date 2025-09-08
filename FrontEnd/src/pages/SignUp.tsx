@@ -20,6 +20,7 @@ const SignUp = () => {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [emailVerificationSent, setEmailVerificationSent] = useState(false);
   const navigate = useNavigate();
   const { signUp, user } = useAuth();
   const { toast } = useToast();
@@ -33,7 +34,7 @@ const SignUp = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (password !== confirmPassword) {
       toast({
         title: "Password Mismatch",
@@ -55,13 +56,22 @@ const SignUp = () => {
     setIsLoading(true);
 
     try {
-      const { error } = await signUp(email, password, name);
-      
+      const { error, session } = await signUp(email, password, name);
+
       if (error) {
         toast({
           title: "Sign Up Failed",
           description: error.message,
           variant: "destructive",
+        });
+      } else if (!session) {
+        // Email verification required
+        setEmailVerificationSent(true);
+        toast({
+          title: "Check Your Email",
+          description:
+            "A verification link has been sent to your email. Please confirm your email before signing in.",
+          variant: "default",
         });
       } else {
         toast({
@@ -192,6 +202,19 @@ const SignUp = () => {
                 {isLoading ? "Creating Account..." : "Create Account"}
               </Button>
             </form>
+
+            {/* Email Verification Card */}
+            {emailVerificationSent && (
+              <div className="mt-4">
+                <CardContent>
+                  <p className="text-sm text-neutral-800 text-center">
+                    We have sent a verification email to{" "}
+                    <strong>{email}</strong>. Please check your inbox and
+                    confirm your email before signing in.
+                  </p>
+                </CardContent>
+              </div>
+            )}
 
             {/* Link to Login */}
             <div className="mt-6 text-center">

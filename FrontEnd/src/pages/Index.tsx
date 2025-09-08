@@ -5,16 +5,10 @@ import { Label } from "@/components/ui/label";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
+  CardDescription,
 } from "@/components/ui/card";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   PieChart,
   Pie,
@@ -29,14 +23,13 @@ import {
 } from "recharts";
 import {
   TrendingUp,
-  User,
   LogOut,
-  DollarSign,
   PieChart as PieChartIcon,
   Brain,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/lib/supabaseClient.ts"; // ✅ make sure this exists
+import { supabase } from "@/lib/supabaseClient.ts";
+import { optimizePortfolio } from "@/api/portfolio.ts";
 
 const Dashboard = () => {
   const [stockName, setStockName] = useState("");
@@ -44,94 +37,94 @@ const Dashboard = () => {
   const [investments, setInvestments] = useState<
     Array<{ name: string; amount: number; percentage: number }>
   >([]);
+  const [aiExplanation, setAiExplanation] = useState("");
   const [showResults, setShowResults] = useState(false);
-  const [user, setUser] = useState<any>(null); // current user
+  const [loading, setLoading] = useState(false);
+  const [placeholderMessage, setPlaceholderMessage] = useState(
+    "Start investing by entering a stock and amount"
+  );
+  const [user, setUser] = useState<any>(null);
   const navigate = useNavigate();
 
-  // ✅ Check session on mount
+  // Warn before page refresh
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue =
+        "Are you sure you want to leave? Your current session may be lost.";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, []);
+
+  // Supabase session
   useEffect(() => {
     const getSession = async () => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (session?.user) {
-        setUser(session.user);
-      } else {
-        navigate("/login"); // redirect if no user
-      }
+      if (session?.user) setUser(session.user);
+      else navigate("/login");
     };
-
     getSession();
 
-    // ✅ Subscribe to session changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUser(session.user);
-      } else {
+      if (session?.user) setUser(session.user);
+      else {
         setUser(null);
         navigate("/login");
       }
     });
-
-    return () => {
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, [navigate]);
 
-  // ✅ Logout
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/login");
   };
 
-  // ✅ Form handling
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleOptimizePortfolio = async () => {
     if (!stockName || !allocation) return;
-
     const amount = parseFloat(allocation);
-    const newInvestment = { name: stockName, amount, percentage: 0 };
-    const updatedInvestments = [...investments, newInvestment];
+    const budget = amount;
+    const stocks = stockName
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (stocks.length === 0) return;
 
-    // Recalculate percentages
-    const totalAmount = updatedInvestments.reduce(
-      (sum, inv) => sum + inv.amount,
-      0
-    );
-    updatedInvestments.forEach((inv) => {
-      inv.percentage = (inv.amount / totalAmount) * 100;
-    });
-
-    setInvestments(updatedInvestments);
-    setStockName("");
-    setAllocation("");
-    setShowResults(true);
+    setLoading(true);
+    try {
+      const result = await optimizePortfolio(budget, stocks);
+      const newInvestments = stocks.map((stock) => ({
+        name: stock,
+        amount: result.allocation[stock] || 0,
+        percentage: ((result.allocation[stock] || 0) / budget) * 100,
+      }));
+      setInvestments(newInvestments);
+      setAiExplanation(result.explanation || "");
+      setShowResults(true);
+      setStockName("");
+      setAllocation("");
+    } catch (err: any) {
+      console.error("Optimization failed:", err.message);
+      alert("Failed to optimize portfolio. Try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // ✅ Mock AI explanation
-  const aiExplanation =
-    investments.length > 0
-      ? `Based on your investment preferences, I've analyzed your portfolio allocation across ${
-          investments.length
-        } stock(s). The largest allocation is ${investments[0]?.percentage.toFixed(
-          1
-        )}% to ${
-          investments[0]?.name
-        }. This diversification strategy helps balance risk and potential returns. Consider monitoring market trends and adjusting allocations based on performance metrics.`
-      : "";
-
-  // ✅ Charts data
-  const pieData = investments.map((inv, index) => ({
+  const pieData = investments.map((inv, idx) => ({
     name: inv.name,
     value: inv.percentage,
     color:
-      index === 0
+      idx === 0
         ? "#3b82f6"
-        : index === 1
+        : idx === 1
         ? "#10b981"
-        : index === 2
+        : idx === 2
         ? "#f59e0b"
         : "#ef4444",
   }));
@@ -142,202 +135,216 @@ const Dashboard = () => {
   }));
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted">
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-background to-muted">
       {/* Header */}
-      <header className="border-b bg-card shadow-soft">
-        <div className="flex items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <div className="p-2 rounded-lg bg-gradient-primary">
-              <TrendingUp className="h-6 w-6 text-white" />
-            </div>
-            <h1 className="text-xl font-bold">QS-helper</h1>
+      <header className="flex items-center justify-between px-4 md:px-6 py-4 border-b bg-card shadow-sm">
+        <div className="flex items-center gap-2">
+          <div className="p-2 rounded-lg bg-slate-800">
+            <TrendingUp className="h-6 w-6 text-white" />
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="flex items-center gap-2"
-              >
-                <User className="h-4 w-4" />
-                {user?.email || "Profile"}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onClick={handleLogout}
-                className="text-destructive"
-              >
-                <LogOut className="h-4 w-4 mr-2" />
-                Logout
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <h1 className="text-xl font-bold">QS-helper</h1>
         </div>
+        <Button onClick={handleLogout} className="bg-slate-600 text-white">
+          <LogOut className="h-4 w-4 mr-1" /> Logout
+        </Button>
       </header>
 
-      <div className="flex flex-1">
-        {/* Left Side - Investment Form */}
-        <div className="w-80 p-6 border-r bg-card">
-          <Card className="shadow-soft">
+      {/* Main */}
+      <div className="flex flex-col md:flex-row flex-1 w-full">
+        {/* Left Panel */}
+        <div className="w-full md:w-80 p-3 border-b md:border-b-0 md:border-r bg-white">
+          <Card className="shadow-sm">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <DollarSign className="h-5 w-5 text-primary" />
-                Investment Calculator
-              </CardTitle>
-              <CardDescription>Enter your stock preferences</CardDescription>
+              <div className="flex items-center gap-2 text-primary font-bold text-lg md:text-xl">
+                <TrendingUp className="h-5 w-5" />
+                <span>Investment Calculator</span>
+              </div>
+              <CardDescription className="mt-1 text-sm md:text-base">
+                Enter your stock and amount
+              </CardDescription>
             </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="stock">Stock Name</Label>
-                  <Input
-                    id="stock"
-                    type="text"
-                    placeholder="e.g., AAPL, TSLA, GOOGL"
-                    value={stockName}
-                    onChange={(e) => setStockName(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="allocation">Amount to Invest ($)</Label>
-                  <Input
-                    id="allocation"
-                    type="number"
-                    placeholder="Amount for this stock"
-                    value={allocation}
-                    onChange={(e) => setAllocation(e.target.value)}
-                    required
-                  />
-                </div>
-                <Button
-                  type="submit"
-                  className="w-full bg-gradient-primary hover:opacity-90"
-                >
-                  Add Investment
-                </Button>
-              </form>
+            <CardContent className="space-y-4">
+              <div>
+                <Label htmlFor="stock">Stock Name (comma-separated)</Label>
+                <Input
+                  id="stock"
+                  type="text"
+                  value={stockName}
+                  onChange={(e) => setStockName(e.target.value)}
+                  placeholder={placeholderMessage}
+                  className="placeholder:opacity-60"
+                />
+              </div>
+              <div>
+                <Label htmlFor="allocation">Amount ($)</Label>
+                <Input
+                  id="allocation"
+                  type="number"
+                  value={allocation}
+                  onChange={(e) => setAllocation(e.target.value)}
+                  placeholder="e.g. 1000"
+                  className="placeholder:opacity-60"
+                />
+              </div>
+              <Button
+                className="w-full bg-primary hover:opacity-90 mt-2"
+                onClick={handleOptimizePortfolio}
+              >
+                Optimize Portfolio
+              </Button>
             </CardContent>
           </Card>
         </div>
 
-        {/* Right Side - Results */}
-        <div className="flex-1 p-6">
-          <div className="grid gap-6">
-            {/* Portfolio Overview */}
-            <Card className="shadow-soft">
+        {/* Right Panel */}
+        <div className="flex-1 p-4 md:p-6 space-y-6">
+          {/* Placeholder */}
+          {!loading && investments.length === 0 && (
+            <Card className="shadow-sm border-dashed border border-primary/30">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <PieChartIcon className="h-5 w-5 text-secondary" />
-                  Portfolio Overview
+                <CardTitle>Start Investing</CardTitle>
+                <CardDescription>{placeholderMessage}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-center text-muted-foreground">
+                  Your portfolio overview will appear here once you optimize
+                  your investment.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Loading */}
+          {loading && (
+            <Card className="shadow-sm border-primary/20">
+              <CardHeader>
+                <CardTitle>Processing Portfolio</CardTitle>
+                <CardDescription>
+                  Please wait while we optimize your stocks...
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex justify-center items-center h-32">
+                <svg
+                  className="animate-spin h-12 w-12 text-primary"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  ></circle>
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                  ></path>
+                </svg>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Pie Chart */}
+          {!loading && investments.length > 0 && (
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle>
+                  <PieChartIcon className="inline mr-2" /> Portfolio Overview
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {investments.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-4">
-                      {investments.map((investment, index) => (
-                        <div
-                          key={index}
-                          className="flex justify-between items-center p-3 rounded-lg bg-muted"
-                        >
-                          <div>
-                            <p className="font-medium">{investment.name}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {investment.percentage.toFixed(1)}% of portfolio
-                            </p>
-                          </div>
-                          <p className="font-bold text-primary">
-                            ${investment.amount.toFixed(2)}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    {investments.map((inv, idx) => (
+                      <div
+                        key={idx}
+                        className="flex justify-between items-center p-3 rounded-lg bg-muted"
+                      >
+                        <div>
+                          <p className="font-medium">{inv.name}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {inv.percentage.toFixed(1)}% of portfolio
                           </p>
                         </div>
-                      ))}
-                    </div>
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={pieData}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={60}
-                            outerRadius={100}
-                            paddingAngle={5}
-                            dataKey="value"
-                          >
-                            {pieData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
-                            ))}
-                          </Pie>
-                          <Tooltip
-                            formatter={(value) => [
-                              `${
-                                typeof value === "number"
-                                  ? value.toFixed(1)
-                                  : value
-                              }%`,
-                              "Allocation",
-                            ]}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
+                        <p className="font-bold text-primary">
+                          ${inv.amount.toFixed(2)}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <PieChartIcon className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>Add investments to see your portfolio distribution</p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Investment Distribution Chart */}
-            {investments.length > 0 && (
-              <Card className="shadow-soft">
-                <CardHeader>
-                  <CardTitle>Investment Distribution</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-64">
+                  <div className="h-64 md:h-80 w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={barData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" />
-                        <YAxis />
+                      <PieChart>
+                        <Pie
+                          data={pieData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={50}
+                          outerRadius={80}
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          {pieData.map((entry, idx) => (
+                            <Cell key={idx} fill={entry.color} />
+                          ))}
+                        </Pie>
                         <Tooltip
-                          formatter={(value) => [`$${value}`, "Amount"]}
+                          formatter={(value) => [
+                            `${value.toFixed(1)}%`,
+                            "Allocation",
+                          ]}
                         />
-                        <Bar
-                          dataKey="amount"
-                          fill="hsl(var(--primary))"
-                          radius={[4, 4, 0, 0]}
-                        />
-                      </BarChart>
+                      </PieChart>
                     </ResponsiveContainer>
                   </div>
-                </CardContent>
-              </Card>
-            )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-            {/* AI Analysis */}
-            {showResults && investments.length > 0 && (
-              <Card className="shadow-soft border-primary/20">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Brain className="h-5 w-5 text-secondary" />
-                    AI Investment Analysis
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="p-4 rounded-lg bg-gradient-to-r from-primary/5 to-secondary/5 border border-primary/10">
-                    <p className="text-sm leading-relaxed">{aiExplanation}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
+          {/* Bar Chart */}
+          {!loading && investments.length > 0 && (
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle>Investment Distribution</CardTitle>
+              </CardHeader>
+              <CardContent className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={barData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip formatter={(value) => [`$${value}`, "Amount"]} />
+                    <Bar
+                      dataKey="amount"
+                      fill="hsl(var(--primary))"
+                      radius={[4, 4, 0, 0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* AI Analysis */}
+          {!loading && showResults && investments.length > 0 && (
+            <Card className="shadow-sm border-primary/20">
+              <CardHeader>
+                <CardTitle>
+                  <Brain className="inline mr-2" /> AI Investment Analysis
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="p-4 rounded-lg bg-gradient-to-r from-primary/5 to-secondary/5 border border-primary/10">
+                  <p className="text-sm leading-relaxed">{aiExplanation}</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>

@@ -126,7 +126,25 @@ async function azureAIExplain(allocation, scores) {
  */
 app.post("/optimize-portfolio", async (req, res) => {
   try {
-    const { budget, stocks } = req.body;
+    let { budget, stocks } = req.body;
+
+    if (!budget || !stocks || stocks.length === 0)
+      return res.status(400).json({ error: "No budget or stocks provided" });
+
+    // ✅ Clean stocks: split comma-separated values, trim, remove empties
+    if (typeof stocks === "string") {
+      stocks = stocks
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s);
+    } else if (Array.isArray(stocks)) {
+      stocks = stocks.map((s) => s.trim()).filter((s) => s);
+    }
+
+    if (stocks.length === 0)
+      return res.status(400).json({ error: "No valid stocks provided" });
+
+    console.log("Cleaned stocks:", stocks);
 
     // 1. Get sentiment scores
     const scores = await getSentimentScores(stocks);
@@ -144,8 +162,10 @@ app.post("/optimize-portfolio", async (req, res) => {
       explanation,
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
+
 const port = 3000;
 app.listen(port, () => console.log(`🚀 Backend running on ${port}`));

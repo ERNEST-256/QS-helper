@@ -24,7 +24,6 @@ async function getSentimentScores(stocks) {
   if (!res.ok) throw new Error("HF model error");
   return await res.json();
 }
-
 /**
  * Simulated Annealing Allocator
  */
@@ -40,7 +39,6 @@ function simulatedAnnealingAllocator(scores, budget) {
 
   return allocation;
 }
-
 /**
  * Azure Quantum Allocator (optional)
  */
